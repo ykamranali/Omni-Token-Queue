@@ -1,0 +1,24 @@
+# Example systemd unit for running Omni Token Queue directly on a Linux
+# server (no Docker). Copy to /etc/systemd/system/omni-token-queue.service,
+# adjust the paths and user, then:
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now omni-token-queue
+#   sudo systemctl status omni-token-queue
+#   journalctl -u omni-token-queue -f      # view logs
+
+[Unit]
+Description=Omni Token Queue
+After=network.target
+
+[Service]
+Type=simple
+User=otq
+WorkingDirectory=/opt/omni-token-queue
+EnvironmentFile=/opt/omni-token-queue/.env
+ExecStart=/usr/bin/node --experimental-sqlite server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

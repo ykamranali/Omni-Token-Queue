@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Terminal — Omni Token Queue</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .agent-shell { max-width: 900px; margin: 0 auto; padding: 28px 20px; }
+  .agent-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+  .now-serving { text-align: center; padding: 40px 20px; }
+  .now-serving .number { font-size: 72px; font-weight: 900; background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .now-serving .svc { color: var(--muted); font-size: 16px; margin-top: 4px; }
+  .action-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 24px; }
+</style>
+</head>
+<body>
+  <div class="agent-shell">
+    <div class="agent-header">
+      <div>
+        <div class="section-title">Agent Terminal</div>
+        <div class="section-sub" id="whoami"></div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <select id="counterSelect"></select>
+        <button class="btn" id="logoutBtn">Sign Out</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div id="nowServingBox" class="now-serving">
+        <div class="muted">No customer being served</div>
+      </div>
+      <div class="action-row" id="actionRow"></div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h3>Waiting Queue</h3>
+      <table><thead><tr><th>Token</th><th>Service</th><th>Priority</th><th>Issued</th></tr></thead><tbody id="waitingBody"></tbody></table>
+    </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    let me, branchId, counters, currentCounterId, currentToken = null;
+
+    async function boot() {
+      me = await requireLogin();
+      qs('#whoami').textContent = `Signed in as ${me.user.fullName}`;
+      const meta = await fetchMeta();
+      branchId = me.user.branchId || (meta.branches[0] && meta.branches[0].id);
+
+      counters = await api(`/api/counters?branchId=${branchId}`);
+      const picker = qs('#counterSelect');
+      picker.innerHTML = counters.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+      currentCounterId = localStorage.getItem('otq_counter') || (counters[0] && counters[0].id);
+      picker.value = currentCounterId;
+      picker.onchange = () => { currentCounterId = picker.value; localStorage.setItem('otq_counter', currentCounterId); refresh(); };
+
+      qs('#logoutBtn').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }); window.location.href = '/login'; };
+
+      renderActions();
+      await refresh();
+      setInterval(refresh, 5000);
+    }
+
+    async function refresh() {
+      const tokens = await api(`/api/tokens?branchId=${branchId}&counterId=${currentCounterId}`);
+      currentToken = tokens.find(t => t.status === 'called' || t.status === 'serving') || null;
+      renderNowServing();
+      renderActions();
+
+      const waiting = await api(`/api/tokens?branchId=${branchId}&status=waiting`);
+      qs('#waitingBody').innerHTML = waiting.length ? waiting.map(t => `
+        <tr><td><strong>${t.token_number}</strong></td><td>${t.service_name}</td><td>${t.priority_level}</td><td>${fmtTime(t.issued_at)}</td></tr>
+      `).join('') : '<tr><td colspan="4" class="empty">No one waiting</td></tr>';
+    }
+
+    function renderNowServing() {
+      const box = qs('#nowServingBox');
+      if (!currentToken) {
+        box.innerHTML = '<div class="muted">No customer being served</div>';
+        return;
+      }
+      box.innerHTML = `
+        <div class="number">${currentToken.token_number}</div>
+        <div class="svc">${currentToken.service_name} &middot; ${statusBadge(currentToken.status)}</div>`;
+    }
+
+    function renderActions() {
+      const row = qs('#actionRow');
+      if (!currentToken) {
+        row.innerHTML = `<button class="btn btn-primary btn-lg" id="callNextBtn">Call Next</button>`;
+        qs('#callNextBtn').onclick = callNext;
+        return;
+      }
+      const buttons = [];
+      if (currentToken.status === 'called') {
+        buttons.push('<button class="btn btn-primary" id="serveBtn">Start Serving</button>');
+      }
+      buttons.push('<button class="btn btn-warning" id="recallBtn">Recall</button>');
+      buttons.push('<button class="btn btn-success" id="completeBtn">Complete</button>');
+      buttons.push('<button class="btn btn-danger" id="noshowBtn">No Show</button>');
+      row.innerHTML = buttons.join('');
+      if (qs('#serveBtn')) qs('#serveBtn').onclick = () => act('serve');
+      qs('#recallBtn').onclick = () => act('recall');
+      qs('#completeBtn').onclick = () => act('complete');
+      qs('#noshowBtn').onclick = () => act('no-show');
+    }
+
+    async function callNext() {
+      try {
+        const result = await api(`/api/counters/${currentCounterId}/call-next`, { method: 'POST' });
+        if (!result.token) { toast('No customers waiting', 'error'); return; }
+        toast(`Calling ${result.token.token_number}`);
+        await refresh();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function act(action) {
+      try {
+        await api(`/api/tokens/${currentToken.id}/${action}`, { method: 'POST' });
+        toast('Done');
+        await refresh();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign In — Omni Token Queue</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(139,92,246,0.15), transparent 60%), var(--bg); }
+  .login-card { width: 100%; max-width: 380px; }
+  .brand-header { display: flex; align-items: center; gap: 10px; justify-content: center; margin-bottom: 24px; }
+  .brand-header .mark { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg, var(--accent-1), var(--accent-2)); display: flex; align-items: center; justify-content: center; font-weight: 900; }
+  .brand-header .name { font-weight: 800; font-size: 18px; }
+  .links { display: flex; justify-content: center; gap: 16px; margin-top: 18px; font-size: 13px; }
+  .links a { color: var(--muted); text-decoration: none; }
+  .links a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="brand-header">
+      <div class="mark">Q</div>
+      <div class="name">Omni Token Queue</div>
+    </div>
+    <div class="card">
+      <h2>Staff Sign In</h2>
+      <p class="section-sub">Admin and agent access. Kiosk and display don't require login.</p>
+      <form id="loginForm">
+        <div class="field">
+          <label for="email">Email</label>
+          <input type="email" id="email" required autocomplete="username">
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block btn-lg">Sign In</button>
+      </form>
+    </div>
+    <div class="links">
+      <a href="/kiosk">Kiosk</a>
+      <a href="/agent">Agent Terminal</a>
+      <a href="/display">TV Display</a>
+    </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      try {
+        await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+        const params = new URLSearchParams(window.location.search);
+        window.location.href = params.get('next') || '/admin';
+      } catch (err) {
+        toast(err.message || 'Login failed', 'error');
+      }
+    });
+
+    // If already logged in, skip straight to the admin dashboard.
+    api('/api/auth/me').then(() => { window.location.href = '/admin'; }).catch(() => {});
+  </script>
+</body>
+</html>

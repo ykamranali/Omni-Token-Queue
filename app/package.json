@@ -1,0 +1,18 @@
+{
+  "name": "omni-token-queue",
+  "version": "1.0.0",
+  "description": "Omni Token Queue - self-contained queue and token management system (admin dashboard, kiosk, agent terminal, TV display). Zero external dependencies - runs on plain Node.js.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "server.js",
+  "scripts": {
+    "start": "node --experimental-sqlite server.js",
+    "dev": "node --experimental-sqlite --watch server.js",
+    "seed": "node --experimental-sqlite src/seed.js"
+  },
+  "dependencies": {},
+  "license": "UNLICENSED",
+  "private": true
+}

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Now Serving — Omni Token Queue</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  body { padding: 32px; }
+  .display-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
+  .display-header .brand { font-size: 24px; font-weight: 900; display: flex; align-items: center; gap: 10px; }
+  .display-header .clock { font-size: 22px; font-weight: 700; color: var(--muted); }
+  .counter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+  .counter-card { background: var(--card); border-radius: 20px; padding: 28px; text-align: center; border: 1px solid var(--border); transition: all 0.3s; }
+  .counter-card.active { border-color: var(--accent-1); box-shadow: 0 0 40px rgba(59,130,246,0.25); }
+  .counter-card .counter-name { color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .counter-card .token-num { font-size: 56px; font-weight: 900; }
+  .counter-card .svc-name { color: var(--muted); margin-top: 6px; }
+  .waiting-strip { margin-top: 32px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .waiting-chip { background: var(--card); border: 1px solid var(--border); border-radius: 30px; padding: 10px 20px; font-size: 14px; }
+  .waiting-chip strong { color: var(--accent-2); }
+  .ticker { margin-top: 32px; background: var(--card-2); border-radius: 14px; padding: 14px 20px; overflow: hidden; white-space: nowrap; }
+  .ticker span { display: inline-block; padding-left: 100%; animation: scroll-left 18s linear infinite; }
+  @keyframes scroll-left { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+  .flash { animation: flashBg 1.4s ease-in-out 2; }
+  @keyframes flashBg { 0%,100% { background: var(--card); } 50% { background: rgba(59,130,246,0.35); } }
+</style>
+</head>
+<body>
+  <div class="display-header">
+    <div class="brand"><span>🎟️</span><span id="companyName">Omni Token Queue</span></div>
+    <div class="clock" id="clock"></div>
+  </div>
+
+  <div class="counter-grid" id="counterGrid"></div>
+  <div class="waiting-strip" id="waitingStrip"></div>
+  <div class="ticker" id="tickerWrap" style="display:none"><span id="tickerText"></span></div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    let branchId, voiceEnabled = false;
+
+    function tick() {
+      qs('#clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    setInterval(tick, 1000); tick();
+
+    function speak(text) {
+      if (!voiceEnabled || !window.speechSynthesis) return;
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.95;
+      window.speechSynthesis.speak(u);
+    }
+
+    async function boot() {
+      const meta = await fetchMeta();
+      branchId = meta.branches[0] && meta.branches[0].id;
+      qs('#companyName').textContent = meta.company?.name || 'Omni Token Queue';
+      if (!branchId) return;
+
+      document.body.addEventListener('click', () => { voiceEnabled = true; }, { once: true });
+
+      await load();
+      setInterval(load, 6000); // fallback poll, in case SSE drops
+
+      const es = new EventSource(`/api/display/${branchId}/stream`);
+      es.addEventListener('token_called', e => {
+        const data = JSON.parse(e.data);
+        speak(`Token ${data.token.token_number.split('').join(' ')}, please proceed to ${data.counter.name}`);
+        load();
+      });
+      es.addEventListener('token_recalled', e => {
+        const data = JSON.parse(e.data);
+        speak(`Token ${data.token.token_number.split('').join(' ')}, please proceed to your counter`);
+        load();
+      });
+      ['token_issued', 'token_completed', 'token_no-show', 'token_transferred'].forEach(evt => {
+        es.addEventListener(evt, load);
+      });
+    }
+
+    async function load() {
+      const data = await api(`/api/display/${branchId}/now-serving`);
+      qs('#counterGrid').innerHTML = data.nowServing.map(row => `
+        <div class="counter-card ${row.token ? 'active' : ''}">
+          <div class="counter-name">${row.counter.name}</div>
+          ${row.token
+            ? `<div class="token-num">${row.token.token_number}</div><div class="svc-name">${row.token.service_name}</div>`
+            : `<div class="token-num muted" style="font-size:32px">—</div><div class="svc-name">Available</div>`}
+        </div>`).join('') || '<div class="empty">No counters configured</div>';
+
+      qs('#waitingStrip').innerHTML = data.waiting.map(w => `
+        <div class="waiting-chip">${w.service_name}: <strong>${w.waiting_count}</strong> waiting</div>
+      `).join('');
+
+      const messages = data.content.filter(c => c.content_type === 'scrolling_message' || c.content_type === 'promotional_banner' || c.content_type === 'emergency_alert');
+      if (messages.length) {
+        qs('#tickerWrap').style.display = 'block';
+        qs('#tickerText').textContent = messages.map(m => m.text_content).join('     •     ');
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+services:
+  omni-token-queue:
+    build: .
+    container_name: omni-token-queue
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DB_PATH=/app/data/omni_token_queue.sqlite
+      - SESSION_SECRET=change-this-to-a-long-random-string
+      - SEED_ADMIN_EMAIL=admin@example.com
+      - SEED_ADMIN_PASSWORD=ChangeMe123!
+      - SEED_COMPANY_NAME=My Organization
+    volumes:
+      - otq-data:/app/data
+
+volumes:
+  otq-data:

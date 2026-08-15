@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Take a Token — Omni Token Queue</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+  .kiosk-wrap { width: 100%; max-width: 720px; text-align: center; }
+  .kiosk-title { font-size: 30px; font-weight: 900; margin-bottom: 6px; }
+  .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px; margin-top: 28px; }
+  .service-btn {
+    background: var(--card); border: 2px solid var(--border); border-radius: 18px; padding: 28px 16px;
+    cursor: pointer; transition: all 0.2s; color: var(--text); text-align: center;
+  }
+  .service-btn:hover { border-color: var(--accent-1); transform: translateY(-4px); }
+  .service-btn .dot { width: 40px; height: 40px; border-radius: 50%; margin: 0 auto 14px; }
+  .service-btn .name { font-weight: 700; font-size: 17px; }
+  .service-btn .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+
+  .ticket { background: var(--card); border-radius: 24px; padding: 48px 32px; border: 2px dashed var(--border); }
+  .ticket .number { font-size: 80px; font-weight: 900; background: linear-gradient(135deg, var(--accent-1), var(--accent-2), var(--accent-3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; line-height: 1; }
+  .ticket .info { color: var(--muted); margin-top: 12px; font-size: 15px; }
+  .ticket .info strong { color: var(--text); }
+</style>
+</head>
+<body>
+  <div class="kiosk-wrap" id="root">
+    <div class="empty">Loading…</div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    let meta, branchId, services;
+
+    async function boot() {
+      meta = await fetchMeta();
+      branchId = meta.branches[0] && meta.branches[0].id;
+      if (!branchId) {
+        qs('#root').innerHTML = '<div class="empty">No branch has been configured yet. An administrator needs to set one up first.</div>';
+        return;
+      }
+      services = await api(`/api/services?branchId=${branchId}`);
+      showServiceMenu();
+    }
+
+    function showServiceMenu() {
+      qs('#root').innerHTML = `
+        <div class="kiosk-title">${meta.company?.name || 'Welcome'}</div>
+        <div class="muted">Select a service to get your token</div>
+        <div class="service-grid">
+          ${services.map(s => `
+            <div class="service-btn" data-id="${s.id}">
+              <div class="dot" style="background:${s.color}"></div>
+              <div class="name">${s.name}</div>
+              <div class="meta">~${s.estimated_duration_minutes || 10} min</div>
+            </div>`).join('') || '<div class="empty">No services are available right now.</div>'}
+        </div>`;
+      qsa('.service-btn').forEach(btn => btn.onclick = () => issueToken(btn.dataset.id));
+    }
+
+    async function issueToken(serviceId) {
+      qs('#root').innerHTML = '<div class="empty">Issuing your token…</div>';
+      try {
+        const result = await api('/api/tokens', {
+          method: 'POST',
+          body: JSON.stringify({ branchId, serviceId }),
+        });
+        const service = services.find(s => s.id === serviceId);
+        qs('#root').innerHTML = `
+          <div class="ticket">
+            <div class="muted">${service.name}</div>
+            <div class="number">${result.token.token_number}</div>
+            <div class="info">Position in queue: <strong>${result.position}</strong> &middot; Estimated wait: <strong>${result.estimatedWaitMinutes} min</strong></div>
+            <div class="info small">Please keep an eye on the display screen and listen for your token to be called.</div>
+          </div>
+          <button class="btn btn-primary btn-lg" style="margin-top:24px" id="doneBtn">Done</button>`;
+        qs('#doneBtn').onclick = showServiceMenu;
+        setTimeout(showServiceMenu, 15000);
+      } catch (e) {
+        qs('#root').innerHTML = `<div class="empty">Something went wrong: ${e.message}</div><button class="btn" onclick="showServiceMenu()">Back</button>`;
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

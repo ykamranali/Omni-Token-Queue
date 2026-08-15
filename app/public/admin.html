@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Dashboard — Omni Token Queue</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .branch-picker { min-width: 180px; }
+  .row-actions { display: flex; gap: 6px; }
+  .service-color-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+</style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="brand">
+        <div class="mark">Q</div>
+        Omni Token Queue
+      </div>
+      <div class="app-nav-item" data-view="dashboard">📊 Dashboard</div>
+      <div class="app-nav-item" data-view="branches">🏢 Branches</div>
+      <div class="app-nav-item" data-view="departments">🗂️ Departments</div>
+      <div class="app-nav-item" data-view="counters">🖥️ Counters</div>
+      <div class="app-nav-item" data-view="services">📋 Services</div>
+      <div class="app-nav-item" data-view="queueRules">⚙️ Queue Rules</div>
+      <div class="app-nav-item" data-view="users">👤 Users &amp; Roles</div>
+      <div class="app-nav-item" data-view="reports">📈 Reports</div>
+      <div style="flex:1"></div>
+      <div class="app-nav-item" id="logoutBtn">🚪 Sign Out</div>
+    </aside>
+    <main class="app-main">
+      <div class="app-topbar">
+        <div>
+          <div class="section-title" id="pageTitle">Dashboard</div>
+          <div class="section-sub" id="pageSub"></div>
+        </div>
+        <select class="branch-picker" id="branchPicker"></select>
+      </div>
+      <div id="viewRoot"></div>
+    </main>
+  </div>
+
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modalContent"></div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    let state = { user: null, permissions: [], branchId: null, branches: [] };
+
+    function openModal(html) {
+      qs('#modalContent').innerHTML = html;
+      qs('#modalOverlay').classList.add('open');
+    }
+    function closeModal() { qs('#modalOverlay').classList.remove('open'); }
+    qs('#modalOverlay').addEventListener('click', e => { if (e.target.id === 'modalOverlay') closeModal(); });
+
+    async function init() {
+      const me = await requireLogin();
+      state.user = me.user;
+      state.permissions = me.permissions;
+
+      const meta = await fetchMeta();
+      state.branches = meta.branches;
+      state.branchId = localStorage.getItem('otq_branch') || (meta.branches[0] && meta.branches[0].id);
+
+      const picker = qs('#branchPicker');
+      picker.innerHTML = meta.branches.map(b => `<option value="${b.id}">${b.name}</option>`).join('');
+      picker.value = state.branchId;
+      picker.addEventListener('change', () => {
+        state.branchId = picker.value;
+        localStorage.setItem('otq_branch', state.branchId);
+        renderCurrentView();
+      });
+
+      qsa('.app-nav-item[data-view]').forEach(item => {
+        item.addEventListener('click', () => {
+          window.location.hash = item.dataset.view;
+        });
+      });
+      qs('#logoutBtn').addEventListener('click', async () => {
+        await api('/api/auth/logout', { method: 'POST' });
+        window.location.href = '/login';
+      });
+
+      window.addEventListener('hashchange', renderCurrentView);
+      if (!window.location.hash) window.location.hash = 'dashboard';
+      renderCurrentView();
+    }
+
+    function currentView() { return (window.location.hash || '#dashboard').slice(1); }
+
+    const TITLES = {
+      dashboard: ['Dashboard', 'Live queue overview for the selected branch'],
+      branches: ['Branches', 'Locations this installation serves'],
+      departments: ['Departments', 'Group counters and services by department'],
+      counters: ['Counters', 'Physical or virtual service points'],
+      services: ['Services', 'What customers can take a token for'],
+      queueRules: ['Queue Rules', 'Token prefixes, priorities, waiting time policy'],
+      users: ['Users & Roles', 'Staff accounts and permissions'],
+      reports: ['Reports', 'Daily queue performance'],
+    };
+
+    async function renderCurrentView() {
+      const view = currentView();
+      qsa('.app-nav-item[data-view]').forEach(i => i.classList.toggle('active', i.dataset.view === view));
+      const [title, sub] = TITLES[view] || ['', ''];
+      qs('#pageTitle').textContent = title;
+      qs('#pageSub').textContent = sub;
+      const root = qs('#viewRoot');
+      root.innerHTML = '<div class="empty">Loading…</div>';
+      try {
+        const renderer = VIEWS[view] || VIEWS.dashboard;
+        await renderer(root);
+      } catch (e) {
+        root.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Dashboard
+    // ---------------------------------------------------------------
+    let dashboardTimer = null;
+    const VIEWS = {
+      async dashboard(root) {
+        clearInterval(dashboardTimer);
+        root.innerHTML = `
+          <div class="grid grid-4" id="kpiRow" style="margin-bottom:20px"></div>
+          <div class="card">
+            <h3>Live Queue</h3>
+            <table id="queueTable"><thead><tr><th>Token</th><th>Service</th><th>Status</th><th>Counter</th><th>Issued</th></tr></thead><tbody></tbody></table>
+          </div>`;
+        const load = async () => {
+          const [tokens, summary] = await Promise.all([
+            api(`/api/tokens?branchId=${state.branchId}`),
+            api(`/api/reports/summary?branchId=${state.branchId}`).catch(() => null),
+          ]);
+          const totals = summary ? summary.totals : {};
+          qs('#kpiRow').innerHTML = ['waiting', 'called', 'serving', 'completed'].map(s => `
+            <div class="card kpi"><div class="num">${totals[s] || 0}</div><div class="label">${s}</div></div>
+          `).join('');
+          qs('#queueTable tbody').innerHTML = tokens.length ? tokens.map(t => `
+            <tr>
+              <td><strong>${t.token_number}</strong></td>
+              <td><span class="service-color-dot" style="background:${t.service_color || '#888'}"></span>${t.service_name}</td>
+              <td>${statusBadge(t.status)}</td>
+              <td>${t.counter_name || '—'}</td>
+              <td>${fmtTime(t.issued_at)}</td>
+            </tr>`).join('') : '<tr><td colspan="5" class="empty">No tokens yet today</td></tr>';
+        };
+        await load();
+        dashboardTimer = setInterval(load, 4000);
+      },
+
+      async branches(root) {
+        const branches = await api('/api/branches');
+        root.innerHTML = `
+          <div style="margin-bottom:16px"><button class="btn btn-primary" id="addBtn">+ Add Branch</button></div>
+          <div class="card"><table><thead><tr><th>Name</th><th>Code</th><th>Address</th><th>Status</th><th></th></tr></thead>
+          <tbody>${branches.map(b => `
+            <tr>
+              <td>${b.name}</td><td>${b.code || '—'}</td><td>${b.address || '—'}</td>
+              <td>${b.is_active ? '<span class="badge badge-completed">active</span>' : '<span class="badge badge-cancelled">disabled</span>'}</td>
+              <td class="row-actions">
+                <button class="btn btn-sm editBtn" data-id="${b.id}">Edit</button>
+                <button class="btn btn-sm btn-danger delBtn" data-id="${b.id}">Disable</button>
+              </td>
+            </tr>`).join('') || '<tr><td colspan="5" class="empty">No branches yet</td></tr>'}</tbody></table></div>`;
+
+        function form(existing = {}) {
+          return `
+            <div class="modal-header"><h3>${existing.id ? 'Edit' : 'Add'} Branch</h3><button class="modal-close" onclick="closeModal()">&times;</button></div>
+            <form id="f">
+              <div class="field"><label>Name</label><input name="name" required value="${existing.name || ''}"></div>
+              <div class="field"><label>Code</label><input name="code" value="${existing.code || ''}"></div>
+              <div class="field"><label>Address</label><input name="address" value="${existing.address || ''}"></div>
+              <button class="btn btn-primary btn-block">${existing.id ? 'Save' : 'Create'}</button>
+            </form>`;
+        }
+        qs('#addBtn').onclick = () => {
+          openModal(form());
+          qs('#f').onsubmit = async e => {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            await api('/api/branches', { method: 'POST', body: JSON.stringify(Object.fromEntries(fd)) });
+            closeModal(); toast('Branch created'); renderCurrentView();
+          };
+        };
+        qsa('.editBtn').forEach(btn => btn.onclick = () => {
+          const b = branches.find(x => x.id === btn.dataset.id);
+          openModal(form(b));
+          qs('#f').onsubmit = async e => {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            await api(`/api/branches/${b.id}`, { method: 'PUT', body: JSON.stringify(Object.fromEntries(fd)) });
+            closeModal(); toast('Branch updated'); renderCurrentView();
+          };
+        });
+        qsa('.delBtn').forEach(btn => btn.onclick = async () => {
+          if (!confirm('Disable this branch?')) return;
+          await api(`/api/branches/${btn.dataset.id}`, { method: 'DELETE' });
+          toast('Branch disabled'); renderCurrentView();
+        });
+      },
+
+      async departments(root) {
+        const depts = await api(`/api/departments?branchId=${state.branchId}`);
+        root.innerHTML = `
+          <div style="margin-bottom:16px"><button class="btn btn-primary" id="addBtn">+ Add Department</button></div>
+          <div class="card"><table><thead><tr><th>Name</th><th>Description</th><th></th></tr></thead>
+          <tbody>${depts.map(d => `
+            <tr><td>${d.name}</td><td>${d.description || '—'}</td>
+            <td class="row-actions"><button class="btn btn-sm btn-danger delBtn" data-id="${d.id}">Disable</button></td></tr>
+          `).join('') || '<tr><td colspan="3" class="empty">No departments for this branch yet</td></tr>'}</tbody></table></div>`;
+
+        qs('#addBtn').onclick = () => {
+          openModal(`
+            <div class="modal-header"><h3>Add Department</h3><button class="modal-close" onclick="closeModal()">&times;</button></div>
+            <form id="f">
+              <div class="field"><label>Name</label><input name="name" required></div>
+              <div class="field"><label>Description</label><input name="description"></div>
+              <button class="btn btn-primary btn-block">Create</button>
+            </form>`);
+          qs('#f').onsubmit = async e => {
+            e.preventDefault();
+            const fd = Object.fromEntries(new FormData(e.target));
+            fd.branchId = state.branchId;
+            await api('/api/departments', { method: 'POST', body: JSON.stringify(fd) });
+            closeModal(); toast('Department created'); renderCurrentView();
+          };
+        };
+        qsa('.delBtn').forEach(btn => btn.onclick = async () => {
+          if (!confirm('Disable this department?')) return;
+          await api(`/api/departments/${btn.dataset.id}`, { method: 'DELETE' });
+          toast('Department disabled'); renderCurrentView();
+        });
+      },
+
+      async counters(root) {
+        const [counters, depts] = await Promise.all([
+          api(`/api/counters?branchId=${state.branchId}`),
+          api(`/api/departments?branchId=${state.branchId}`),
+        ]);
+        const deptName = id => (depts.find(d => d.id === id) || {}).name || '—';
+        root.innerHTML = `
+          <div style="margin-bottom:16px"><button class="btn btn-primary" id="addBtn">+ Add Counter</button></div>
+          <div class="card"><table><thead><tr><th>Name</th><th>Number</th><th>Department</th><th></th></tr></thead>
+          <tbody>${counters.map(c => `
+            <tr><td>${c.name}</td><td>${c.number || '—'}</td><td>${deptName(c.department_id)}</td>
+            <td class="row-actions"><button class="btn btn-sm btn-danger delBtn" data-id="${c.id}">Disable</button></td></tr>
+          `).join('') || '<tr><td colspan="4" class="empty">No counters for this branch yet</td></tr>'}</tbody></table></div>`;
+
+        qs('#addBtn').onclick = () => {
+          openModal(`
+            <div class="modal-header"><h3>Add Counter</h3><button class="modal-close" onclick="closeModal()">&times;</button></div>
+            <form id="f">
+              <div class="field"><label>Name</label><input name="name" required placeholder="Counter 3"></div>
+              <div class="field"><label>Number</label><input name="number"></div>
+              <div class="field"><label>Department</label>
+                <select name="departmentId">${depts.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}</select>
+              </div>
+              <button class="btn btn-primary btn-block">Create</button>
+            </form>`);
+          qs('#f').onsubmit = async e => {
+            e.preventDefault();
+            const fd = Object.fromEntries(new FormData(e.target));
+            fd.branchId = state.branchId;
+            await api('/api/counters', { method: 'POST', body: JSON.stringify(fd) });
+            closeModal(); toast('Counter created'); renderCurrentView();
+          };
+        };
+        qsa('.delBtn').forEach(btn => btn.onclick = async () => {
+          if (!confirm('Disable this counter?')) return;
+          await api(`/api/counters/${btn.dataset.id}`, { method: 'DELETE' });
+          toast('Counter disabled'); renderCurrentView();
+        });
+      },
+
+      async services(root) {
+        const services = await api(`/api/services?branchId=${state.branchId}`);
+        const allServices = await api('/api/services');
+        root.innerHTML = `
+          <div style="margin-bottom:16px"><button class="btn btn-primary" id="addBtn">+ Add Service</button></div>
+          <div class="card"><table><thead><tr><th>Name</th><th>Color</th><th>Duration</th><th>Priority</th><th>Online booking</th><th>Status</th><th></th></tr></thead>
+          <tbody>${allServices.map(s => `
+            <tr>
+              <td>${s.name}</td>
+              <td><span class="service-color-dot" style="background:${s.color}"></span>${s.color}</td>
+              <td>${s.estimated_duration_minutes || '—'} min</td>
+              <td>${s.priority}</td>
+              <td>${s.online_booking_enabled ? 'Yes' : 'No'}</td>
+              <td>${s.is_enabled ? '<span class="badge badge-completed">enabled</span>' : '<span class="badge badge-cancelled">disabled</span>'}</td>
+              <td class="row-actions"><button class="btn btn-sm btn-danger delBtn" data-id="${s.id}">Disable</button></td>
+            </tr>`).join('') || '<tr><td colspan="7" class="empty">No services yet</td></tr>'}</tbody></table></div>`;
+
+        qs('#addBtn').onclick = () => {
+          openModal(`
+            <div class="modal-header"><h3>Add Service</h3><button class="modal-close" onclick="closeModal()">&times;</button></div>
+            <form id="f">
+              <div class="field"><label>Name</label><input name="name" required></div>
+              <div class="field"><label>Description</label><input name="description"></div>
+              <div class="field"><label>Color</label><input type="color" name="color" value="#3b82f6"></div>
+              <div class="field"><label>Estimated duration (minutes)</label><input type="number" name="estimatedDurationMinutes" value="10"></div>
+              <div class="field"><label>Priority (higher = served first)</label><input type="number" name="priority" value="0"></div>
+              <label style="display:flex;align-items:center;gap:8px;margin-bottom:14px"><input type="checkbox" name="onlineBookingEnabled" style="width:auto"> Allow online booking</label>
+              <button class="btn btn-primary btn-block">Create</button>
+            </form>`);
+          qs('#f').onsubmit = async e => {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const body = {
+              name: fd.get('name'), description: fd.get('description'), color: fd.get('color'),
+              estimatedDurationMinutes: Number(fd.get('estimatedDurationMinutes')) || 10,
+              priority: Number(fd.get('priority')) || 0,
+              onlineBookingEnabled: fd.get('onlineBookingEnabled') === 'on',
+              branchIds: [state.branchId],
+            };
+            await api('/api/services', { method: 'POST', body: JSON.stringify(body) });
+            closeModal(); toast('Service created'); renderCurrentView();
+          };
+        };
+        qsa('.delBtn').forEach(btn => btn.onclick = async () => {
+          if (!confirm('Disable this service?')) return;
+          await api(`/api/services/${btn.dataset.id}`, { method: 'DELETE' });
+          toast('Service disabled'); renderCurrentView();
+        });
+      },
+
+      async queueRules(root) {
+        const services = await api('/api/services');
+        root.innerHTML = `
+          <div class="card">
+            <div class="field"><label>Service</label><select id="svcSelect">${services.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
+            <div id="ruleForm"></div>
+          </div>`;
+        async function loadRule(serviceId) {
+          const rules = await api(`/api/queue-rules?serviceId=${serviceId}`);
+          const rule = rules[0];
+          qs('#ruleForm').innerHTML = `
+            <form id="f" style="margin-top:16px">
+              <div class="grid grid-2">
+                <div class="field"><label>Token Prefix</label><input name="tokenPrefix" value="${rule?.token_prefix || ''}"></div>
+                <div class="field"><label>Recall Limit</label><input type="number" name="recallLimit" value="${rule?.recall_limit ?? 3}"></div>
+                <div class="field"><label>Max Waiting Time (minutes)</label><input type="number" name="maxWaitingTimeMinutes" value="${rule?.max_waiting_time_minutes ?? ''}"></div>
+                <div class="field"><label>Daily Reset Time</label><input type="time" name="dailyResetTime" value="${rule?.daily_reset_time || '00:00'}"></div>
+              </div>
+              <button class="btn btn-primary">${rule ? 'Save Rule' : 'Create Rule'}</button>
+            </form>`;
+          qs('#f').onsubmit = async e => {
+            e.preventDefault();
+            const fd = Object.fromEntries(new FormData(e.target));
+            fd.recallLimit = Number(fd.recallLimit);
+            fd.maxWaitingTimeMinutes = fd.maxWaitingTimeMinutes ? Number(fd.maxWaitingTimeMinutes) : null;
+            if (rule) {
+              await api(`/api/queue-rules/${rule.id}`, { method: 'PUT', body: JSON.stringify(fd) });
+            } else {
+              fd.serviceId = serviceId;
+              await api('/api/queue-rules', { method: 'POST', body: JSON.stringify(fd) });
+            }
+            toast('Queue rule saved');
+            loadRule(serviceId);
+          };
+        }
+        qs('#svcSelect').onchange = e => loadRule(e.target.value);
+        if (services[0]) loadRule(services[0].id);
+      },
+
+      async users(root) {
+        const users = await api('/api/users');
+        const roles = await api('/api/roles');
+        root.innerHTML = `
+          <div style="margin-bottom:16px"><button class="btn btn-primary" id="addBtn">+ Add User</button></div>
+          <div class="card"><table><thead><tr><th>Name</th><th>Email</th><th>Roles</th><th>Status</th></tr></thead>
+          <tbody>${users.map(u => `
+            <tr><td>${u.full_name}</td><td>${u.email}</td><td>${u.roles.map(r => r.name).join(', ') || '—'}</td>
+            <td>${u.is_active ? '<span class="badge badge-completed">active</span>' : '<span class="badge badge-cancelled">disabled</span>'}</td></tr>
+          `).join('')}</tbody></table></div>`;
+
+        qs('#addBtn').onclick = () => {
+          openModal(`
+            <div class="modal-header"><h3>Add User</h3><button class="modal-close" onclick="closeModal()">&times;</button></div>
+            <form id="f">
+              <div class="field"><label>Full name</label><input name="fullName" required></div>
+              <div class="field"><label>Email</label><input type="email" name="email" required></div>
+              <div class="field"><label>Password</label><input type="password" name="password" required></div>
+              <div class="field"><label>Role</label><select name="roleId">${roles.map(r => `<option value="${r.id}">${r.name}</option>`).join('')}</select></div>
+              <button class="btn btn-primary btn-block">Create</button>
+            </form>`);
+          qs('#f').onsubmit = async e => {
+            e.preventDefault();
+            const fd = Object.fromEntries(new FormData(e.target));
+            fd.branchId = state.branchId;
+            await api('/api/users', { method: 'POST', body: JSON.stringify(fd) });
+            closeModal(); toast('User created'); renderCurrentView();
+          };
+        };
+      },
+
+      async reports(root) {
+        const today = new Date().toISOString().slice(0, 10);
+        root.innerHTML = `
+          <div class="card" style="margin-bottom:16px">
+            <div class="field" style="max-width:220px"><label>Date</label><input type="date" id="dateInput" value="${today}"></div>
+          </div>
+          <div id="reportBody"></div>`;
+        async function load() {
+          const date = qs('#dateInput').value;
+          const summary = await api(`/api/reports/summary?branchId=${state.branchId}&date=${date}`);
+          qs('#reportBody').innerHTML = `
+            <div class="grid grid-4" style="margin-bottom:20px">
+              ${['waiting', 'called', 'serving', 'completed', 'no_show', 'cancelled'].map(s => `
+                <div class="card kpi"><div class="num">${summary.totals[s] || 0}</div><div class="label">${s}</div></div>
+              `).join('')}
+            </div>
+            <div class="grid grid-2" style="margin-bottom:20px">
+              <div class="card kpi"><div class="num">${summary.avgWaitMinutes ?? '—'}</div><div class="label">Avg. wait (min)</div></div>
+              <div class="card kpi"><div class="num">${summary.avgServiceMinutes ?? '—'}</div><div class="label">Avg. service time (min)</div></div>
+            </div>
+            <div class="card">
+              <h3>By Service</h3>
+              <table><thead><tr><th>Service</th><th>Status</th><th>Count</th></tr></thead>
+              <tbody>${summary.byService.map(r => `<tr><td>${r.service_name}</td><td>${statusBadge(r.status)}</td><td>${r.c}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No data</td></tr>'}</tbody></table>
+            </div>`;
+        }
+        qs('#dateInput').onchange = load;
+        load();
+      },
+    };
+
+    init();
+  </script>
+</body>
+</html>
